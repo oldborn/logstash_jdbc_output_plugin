@@ -1,0 +1,1 @@
+# logstash_jdbc_output_plugin
