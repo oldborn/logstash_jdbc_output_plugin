@@ -1,0 +1,13 @@
+out/
+vendor/
+lib/
+build/
+.idea/
+.gradle/
+Gemfile
+logstash-output-logstash_jdbc_output_plugin.gemspec
+gradle/
+docs/
+gradlew
+gradlew.bat
+jdbc-drivers/
