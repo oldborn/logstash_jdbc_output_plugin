@@ -24,6 +24,12 @@ public class LogstashJdbcOutputPlugin implements Output {
     public static final PluginConfigSpec<String> CONNECTION_STRING =
             PluginConfigSpec.stringSetting("connectionString", "");
     
+    public static final PluginConfigSpec<String> DB_USERNAME =
+            PluginConfigSpec.stringSetting("username", "");
+
+    public static final PluginConfigSpec<String> DB_PASSWORD =
+            PluginConfigSpec.stringSetting("password", "");
+    
     public static final PluginConfigSpec<Long> MAX_BATCH_SIZE_CONFIG =
             PluginConfigSpec.numSetting("maxBatchSize", 10000);
     
@@ -44,7 +50,7 @@ public class LogstashJdbcOutputPlugin implements Output {
     private volatile boolean stopped = false;
     
     private Long maxBatchSize;
-    private String connectionString;
+    
     private String sqlStatement;
     private List<String> orderedEventParameterNames;
 
@@ -54,7 +60,10 @@ public class LogstashJdbcOutputPlugin implements Output {
         
         this.id = id;
         maxBatchSize = config.get(MAX_BATCH_SIZE_CONFIG);
-        connectionString = config.get(CONNECTION_STRING);
+        String connectionString = config.get(CONNECTION_STRING);
+        String username = config.get(DB_USERNAME);
+        String password = config.get(DB_PASSWORD);
+        
         sqlStatement = config.get(SQL_STATEMENT);
         orderedEventParameterNames = config.get(ORDERED_EVENT_PARAMETER_NAMES)
                 .stream().map(o -> (String)o).collect(Collectors.toList());
@@ -62,7 +71,10 @@ public class LogstashJdbcOutputPlugin implements Output {
         int maxPoolSize = config.get(MAX_POOL_SIZE).intValue();
         int minIdleConnection = config.get(MIN_IDLE).intValue();
         HikariConfig hikariConfig = new HikariConfig();
-        hikariConfig.setJdbcUrl( connectionString);
+        hikariConfig.setJdbcUrl(connectionString);
+        hikariConfig.setUsername(username);
+        hikariConfig.setPassword(password);
+        
         hikariConfig.addDataSourceProperty( "cachePrepStmts" , "true" );
         hikariConfig.addDataSourceProperty( "prepStmtCacheSize" , "250" );
         hikariConfig.addDataSourceProperty( "prepStmtCacheSqlLimit" , "2048" );
@@ -143,7 +155,9 @@ public class LogstashJdbcOutputPlugin implements Output {
                 SQL_STATEMENT,
                 ORDERED_EVENT_PARAMETER_NAMES,
                 MAX_POOL_SIZE,
-                MIN_IDLE
+                MIN_IDLE,
+                DB_USERNAME,
+                DB_PASSWORD
         );
     }
 
