@@ -1,7 +1,6 @@
 package org.logstashplugins;
 
 import co.elastic.logstash.api.*;
-import com.sun.istack.internal.Nullable;
 import com.zaxxer.hikari.HikariConfig;
 import com.zaxxer.hikari.HikariDataSource;
 import org.apache.logging.log4j.Logger;
@@ -54,7 +53,7 @@ public class LogstashJdbcOutputPlugin implements Output {
     private String sqlStatement;
     private List<String> orderedEventParameterNames;
     
-    @Nullable private DeadLetterQueueWriter deadLetterQueueWriter;
+    private DeadLetterQueueWriter deadLetterQueueWriter;
     private DataSource dataSource;
 
     private Optional<DeadLetterQueueWriter> getDeadLetterQueueWriter(){
