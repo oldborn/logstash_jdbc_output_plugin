@@ -12,3 +12,4 @@ gradlew
 gradlew.bat
 jdbc-drivers/
 logstash-output-logstash_jdbc_output_plugin-1.0.0.gem
+dlq_path/
