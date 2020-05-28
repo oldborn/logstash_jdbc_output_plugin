@@ -224,6 +224,63 @@ public class LogstashJdbcOutputPluginTest {
     }
 
     @Test
+    public void testConnectionCloseViolationWhileBatchUpdateCloseSignal() throws SQLException {
+        LogstashJdbcOutputPlugin logstashJdbcOutputPlugin = configure("test_connection_close");
+        create_table(logstashJdbcOutputPlugin);
+        final int maxEvent = 100000;
+        final int batchSize = 250;
+        final int atThisCloseConnections = 1001;
+        final int closeForSeconds = 10;
+
+        DataSource actualDataSource = logstashJdbcOutputPlugin.getDataSource();
+        DataSource mockedDataSource = new MockDataSource(new SQLException("","",-80));
+        Random random = new Random();
+
+        List<Event> events = new ArrayList<>(batchSize);
+        for (int i = 0; i <maxEvent;i++){
+            if (i == atThisCloseConnections){
+                logstashJdbcOutputPlugin.setDataSource(mockedDataSource);
+                System.out.println("Changed datasource with mocked one that throws DataAccessResourceFailureException");
+                new Timer().schedule(
+                        new TimerTask() {
+                            @Override
+                            public void run() {
+                                System.out.println("Changed datasource with proper one");
+                                logstashJdbcOutputPlugin.setDataSource(actualDataSource);
+                            }
+                        }
+                        , closeForSeconds * 1000);
+                
+                new Timer().schedule(new TimerTask() {
+                    @Override
+                    public void run() {
+                        System.out.println("Sending stop");
+                        logstashJdbcOutputPlugin.stop();
+                    }
+                }, 5*1000);
+            }
+            Event event = new org.logstash.Event();
+            event.setField("ID",i);
+            event.setField("NAME",Lorem.getFirstName());
+            event.setField("SURNAME",Lorem.getLastName());
+            event.setField("AGE",random.nextInt(65));
+            events.add(event);
+
+            if (events.size() >= batchSize){
+                logstashJdbcOutputPlugin.output(events);
+                events.clear();
+            }
+        }
+
+        if (!events.isEmpty()){
+            logstashJdbcOutputPlugin.output(events);
+            events.clear();
+        }
+
+        Assertions.assertEquals(maxEvent,count_records(logstashJdbcOutputPlugin.getDataSource()));
+    }
+    
+    @Test
     public void corrupted_event() throws SQLException {
         LogstashJdbcOutputPlugin logstashJdbcOutputPlugin = configure("corrupted_event");
         create_table(logstashJdbcOutputPlugin);

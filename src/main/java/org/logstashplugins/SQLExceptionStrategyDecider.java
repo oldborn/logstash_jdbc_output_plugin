@@ -40,7 +40,7 @@ public class SQLExceptionStrategyDecider {
         }else if (dataAccessException instanceof InvalidResultSetAccessException){
             return SQLExceptionResolveStrategy.SHUTDOWN;
         }else if (dataAccessException instanceof DuplicateKeyException){
-            return SQLExceptionResolveStrategy.SHUTDOWN;
+            return SQLExceptionResolveStrategy.DISCARD;
         }else if (dataAccessException instanceof DataIntegrityViolationException){
             return SQLExceptionResolveStrategy.DISCARD;
         }else if (dataAccessException instanceof PermissionDeniedDataAccessException){

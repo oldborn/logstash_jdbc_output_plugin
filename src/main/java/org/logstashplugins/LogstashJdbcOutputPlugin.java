@@ -4,6 +4,9 @@ import co.elastic.logstash.api.*;
 import com.zaxxer.hikari.HikariConfig;
 import com.zaxxer.hikari.HikariDataSource;
 import org.apache.logging.log4j.Logger;
+import org.logstash.common.DLQWriterAdapter;
+import sun.misc.Signal;
+import sun.misc.SignalHandler;
 
 import javax.sql.DataSource;
 import java.io.IOException;
@@ -43,12 +46,14 @@ public class LogstashJdbcOutputPlugin implements Output {
     public static final PluginConfigSpec<Long> MIN_IDLE =
             PluginConfigSpec.numSetting("minIdle", 10);
     
+    public static final PluginConfigSpec<String> DEAD_LETTER_QUEUE_PATH =
+            PluginConfigSpec.stringSetting("deadLetterQueuePath", null);
+    
     private final String id;
     private final CountDownLatch done = new CountDownLatch(1);
     private final SQLExceptionStrategyDecider sqlExceptionStrategyDecider;
     private volatile boolean stopped = false;
     private final int maxWaitInSeconds =  600;
-    
     
     private String sqlStatement;
     private List<String> orderedEventParameterNames;
@@ -69,8 +74,20 @@ public class LogstashJdbcOutputPlugin implements Output {
     }
 
     public LogstashJdbcOutputPlugin(final String id, final Configuration config, final Context context) {
-        deadLetterQueueWriter = context.getDlqWriter();
         logger = context.getLogger(this);
+        String deadLetterQueuePath = config.get(DEAD_LETTER_QUEUE_PATH);
+        if (deadLetterQueuePath != null){
+            logger.info("Configuring DLQ at {}",deadLetterQueuePath);
+            try {
+                deadLetterQueueWriter = new DLQWriterAdapter(new org.logstash.common.io.DeadLetterQueueWriter
+                        (
+                                deadLetterQueuePath
+                        )
+                );
+            } catch (IOException e) {
+                logger.error("Could not configure DLQ at "+deadLetterQueuePath,e);
+            }
+        }
         this.id = id;
         String connectionString = config.get(CONNECTION_STRING);
         String username = config.get(DB_USERNAME);
@@ -92,6 +109,7 @@ public class LogstashJdbcOutputPlugin implements Output {
         hikariConfig.addDataSourceProperty( "prepStmtCacheSqlLimit" , "2048" );
         hikariConfig.setMaximumPoolSize(maxPoolSize);
         hikariConfig.setMinimumIdle(minIdleConnection);
+        hikariConfig.setConnectionTimeout(3000);
         logger.info("Initializing HikariPool");
         dataSource = new HikariDataSource( hikariConfig );
 
@@ -102,48 +120,70 @@ public class LogstashJdbcOutputPlugin implements Output {
             throw new IllegalStateException("Could not acquire connection to investigate metadata of db.", e);
         }
         
-        
         logger.info("Initialized HikariPool");
+
+        Signal.handle(new Signal("USR2"), new SignalHandler() {
+            public void handle(Signal sig) {
+                if (!stopped){
+                    logger.warn("USR2 received.");
+                    stopped = true;
+                }{
+                    logger.warn("USR2 received again?");   
+                }
+            }
+        });
+
     }
 
     @Override
     public void output(final Collection<Event> events) {
+        
         long startTime = System.currentTimeMillis();
         logger.debug(()->"Number of events: "+events.size()+" ");
+        //boolean isSuccess = false;
         try {
             batchCommitUntilUnrepeatable(events);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
+            logger.error("INTERRUPTED : CLOSED BUT HAD {}", events.size());
+            throw new IllegalStateException(e);
+        }catch (IllegalStateException e){
+            logger.error("ILLEGAL : CLOSED BUT HAD {}", events.size());
             throw new IllegalStateException(e);
         }
+
         logger.debug(()->"Executed: "+events.size()+" in "+(System.currentTimeMillis() - startTime)+" milliseconds.");
     }
+
     
-    private void batchCommitUntilUnrepeatable(Collection<Event> events) throws InterruptedException {
+    private boolean batchCommitUntilUnrepeatable(Collection<Event> events) throws InterruptedException {
         int waitInSeconds = 1;
         while (true){
             try {
                 batchCommit(events);
-                return;
+                return true;
             } catch (SQLException e) {
                 SQLExceptionResolveStrategy strategy = sqlExceptionStrategyDecider.decide(e);
                 if (strategy.equals(SQLExceptionResolveStrategy.RETRY)){
-                    logger.error("Retriable SQL Exception occurred will retry again in {} seconds.", waitInSeconds);
+                    logger.error("RETRY Retriable SQL Exception occurred will retry again in {} seconds.", waitInSeconds);
                     logger.error("",e);
-                    waitWhileNotStopped(waitInSeconds);
+                    waitWhileNotTerminated(waitInSeconds);
                     waitInSeconds = waitInSeconds * 2;
                     waitInSeconds = waitInSeconds > maxWaitInSeconds ? maxWaitInSeconds : waitInSeconds;
                 }else if(strategy.equals(SQLExceptionResolveStrategy.SHUTDOWN)){
-                    logger.error("A non-retriable SQL Exception occurred, shutting down logstash.",e);
+                    logger.error("SHUTDOWN A non-retriable SQL Exception occurred, shutting down logstash.",e);
                     throw new IllegalStateException(e);
                 }else if (strategy.equals(SQLExceptionResolveStrategy.DISCARD)){
-                    logger.error("An SQL Exception occurred, some of the events are corrupt. Will try to insert one-by-one.",e);
+                    logger.error("DISCARD An SQL Exception occurred, some of the events are corrupt. Will try to insert one-by-one.",e);
                     break;
                 }
             } catch (Throwable throwable){
                 throw new IllegalStateException(throwable);
             }
         }
+        
+        logger.error("CONTINUING ONE_BY_ONE");
+        
         // if this line is reached, try one-by-one
         // reset wait in seconds
         waitInSeconds = 1;
@@ -155,15 +195,14 @@ public class LogstashJdbcOutputPlugin implements Output {
                 connection.setAutoCommit(false);
                 executeOneByOne(connection,events);
                 connection.commit();
-                break;
+                return true;
             } catch (SQLException e) {
                 logger.error("",e);
-                waitWhileNotStopped(waitInSeconds);
+                waitWhileNotTerminated(waitInSeconds);
                 waitInSeconds = waitInSeconds * 2;
                 waitInSeconds = waitInSeconds > maxWaitInSeconds ? maxWaitInSeconds : waitInSeconds;
             }
         }
-
     }
     
     private void executeOneByOne(Connection connection, Collection<Event> events) throws SQLException, InterruptedException {
@@ -184,7 +223,7 @@ public class LogstashJdbcOutputPlugin implements Output {
                 SQLExceptionResolveStrategy strategy = sqlExceptionStrategyDecider.decide(e);
                 if (strategy.equals(SQLExceptionResolveStrategy.RETRY)){
                     logger.error("Retriable SQL Exception occurred will retry again in {} seconds.", waitInSeconds);
-                    waitWhileNotStopped(waitInSeconds);
+                    waitWhileNotTerminated(waitInSeconds);
                     waitInSeconds = waitInSeconds * 2;
                     waitInSeconds = waitInSeconds > maxWaitInSeconds ? maxWaitInSeconds : waitInSeconds;
                 }else if(strategy.equals(SQLExceptionResolveStrategy.SHUTDOWN)){
@@ -214,14 +253,13 @@ public class LogstashJdbcOutputPlugin implements Output {
         }
     }
     
-    private void waitWhileNotStopped(int waitInSeconds) throws InterruptedException {
+    private void waitWhileNotTerminated(int waitInSeconds) throws InterruptedException {
         while (waitInSeconds > 0){
             if (!stopped){
                 Thread.sleep(1000);
                 waitInSeconds--;   
             }else{
-                logger.warn("Stop signal occurred, closing down the pipeline {} .",id);
-                throw new IllegalStateException();
+                throw new IllegalStateException("Stopped in loop.");
             }
         }
     }
@@ -263,6 +301,8 @@ public class LogstashJdbcOutputPlugin implements Output {
     private void prepareStatementWithEvent(PreparedStatement preparedStatement, Event event) throws SQLException {
         for (int i = 0; i< orderedEventParameterNames.size() ; i++){
             Object field = event.getField(orderedEventParameterNames.get(i));
+            //if (field == null) preparedStatement.setObject(i+1,null);
+            
             if (field instanceof Integer){
                 preparedStatement.setInt(i+1, (Integer) field);
             }else if(field instanceof Double){
@@ -281,6 +321,7 @@ public class LogstashJdbcOutputPlugin implements Output {
     
     @Override
     public void stop() {
+        logger.error("Stop method called, stopping the plugin.");
         stopped = true;
         done.countDown();
     }
@@ -294,6 +335,7 @@ public class LogstashJdbcOutputPlugin implements Output {
     public Collection<PluginConfigSpec<?>> configSchema() {
         // should return a list of all configuration options for this plugin
         return Arrays.asList(
+                DEAD_LETTER_QUEUE_PATH,
                 CONNECTION_STRING,
                 SQL_STATEMENT,
                 ORDERED_EVENT_PARAMETER_NAMES,
