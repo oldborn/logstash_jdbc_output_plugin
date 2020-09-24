@@ -5,8 +5,6 @@ import com.zaxxer.hikari.HikariConfig;
 import com.zaxxer.hikari.HikariDataSource;
 import org.apache.logging.log4j.Logger;
 import org.logstash.common.DLQWriterAdapter;
-import sun.misc.Signal;
-import sun.misc.SignalHandler;
 
 import javax.sql.DataSource;
 import java.io.IOException;
@@ -121,17 +119,6 @@ public class LogstashJdbcOutputPlugin implements Output {
         }
         
         logger.info("Initialized HikariPool");
-
-        Signal.handle(new Signal("USR2"), new SignalHandler() {
-            public void handle(Signal sig) {
-                if (!stopped){
-                    logger.warn("USR2 received.");
-                    stopped = true;
-                }{
-                    logger.warn("USR2 received again?");   
-                }
-            }
-        });
 
     }
 
